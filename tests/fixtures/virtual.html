@@ -1,0 +1,14 @@
+<html lang="en">
+  <body>
+    <script>
+      var source = new XMLHttpRequest();
+      source.open("GET", "/index.html", false);
+      source.send();
+      setTimeout(() => {
+        document.open();
+        document.write(source.responseText);
+        document.close();
+      }, 0);
+    </script>
+  </body>
+</html>

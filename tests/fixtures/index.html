@@ -1,0 +1,438 @@
+<html lang="en">
+  <head>
+    <style>
+      svg,
+      img {
+        width: 20px;
+        height: 20px;
+      }
+      article {
+        min-height: 450px;
+      }
+      button,
+      [role="menuitem"] {
+        min-width: 24px;
+        min-height: 24px;
+      }
+      #layers {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: white;
+        z-index: 10;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="shell"></div>
+    <div id="profile"></div>
+    <main></main>
+    <div id="layers"></div>
+    <script>
+      const search = location.search;
+      const flags = search || (location.pathname === "/virtual.html" ? "virtual=1" : sessionStorage.flags || "");
+      if (search || location.pathname === "/virtual.html") sessionStorage.flags = flags;
+      const p = new URLSearchParams(flags);
+      const request = new XMLHttpRequest();
+      request.open("GET", "/x_capture.json", false);
+      request.send();
+      const capture = JSON.parse(request.responseText);
+      if (p.has("framechurn")) {
+        setInterval(() => {
+          const frame = document.createElement("iframe");
+          frame.src = "about:blank";
+          document.body.append(frame);
+          setTimeout(() => frame.remove(), 2);
+        }, 4);
+      }
+      const virtual = p.has("virtual");
+      const undoDrop = p.get("undodrop");
+      const tab = location.pathname.endsWith("/media") ? "media" : location.pathname.endsWith("/reposts")
+        ? "reposts"
+        : location.pathname.endsWith("/with_replies") ||
+            location.pathname === "/" ||
+            location.pathname === "/index.html"
+          ? "with_replies"
+          : "posts";
+      let next = 0;
+      window.attempts = JSON.parse(sessionStorage.attempts || "{}");
+      window.removed = JSON.parse(sessionStorage.removed || "[]");
+      const deleted = JSON.parse(sessionStorage.deleted || "[]");
+      const rows = [
+        ["1", "me", 90, "", "old"],
+        ["2", "me", 90, "", "reply"],
+        ["3", "other", 90, "", "other"],
+        ["4", "me", 90, "Pinned", "pinned"],
+        ["5", "other", 90, "You reposted", "repost"],
+        ["6", "me", 1, "", "new"],
+        ["7", "me", 90, "", "quote"],
+        ["8", "other", 120, "You reposted", "fresh repost"],
+      ];
+      if (p.has("pinfirst")) rows.unshift(["4", "me", 90, "", "pin copy"]);
+      if (p.has("nopin")) rows[3][3] = "";
+      if (p.has("youngrepost")) rows[4][2] = 20;
+
+      if (p.has("stall") || p.get("stalltab") === tab) {
+        rows.splice(2);
+        let b = document.createElement("button");
+        b.textContent = "Retry";
+        document.body.append(b);
+      }
+      if (p.has("nested")) {
+        let f = document.createElement("iframe");
+        f.srcdoc =
+          '<html lang="en"><iframe srcdoc="&lt;html lang=&quot;en&quot;&gt;&lt;input type=&quot;password&quot;&gt;&lt;/html&gt;"></iframe></html>';
+        document.body.append(f);
+      }
+      if (p.has("duplicatepin")) rows.push(["4", "me", 90, "", "pin copy"]);
+      if (p.has("selfrepost"))
+        rows.unshift(["1", "me", 90, "me reposted", "self repost"]);
+      if (p.has("quotes"))
+        rows.unshift(
+          ["10", "me", 1, "", "quote"],
+          ["11", "me", 90, "Pinned", "quote"],
+        );
+      if (p.has("words")) rows[0][4] = "captcha unusual activity";
+
+      function parse(html) {
+        const t = document.createElement("template");
+        t.innerHTML = html;
+        return t.content;
+      }
+      function substitute(html, id, author, age, text) {
+        const node = parse(html.replaceAll("OwnUser", "me"));
+        const a = node.querySelector("article");
+        if (!a) return node;
+        const header = a.querySelector('[data-testid="User-Name"]');
+        const source = header.querySelector("a").getAttribute("href").slice(1);
+        const status = header
+          .querySelector("time")
+          .closest("a")
+          .getAttribute("href")
+          .split("/")
+          .pop();
+        for (const e of a.querySelectorAll("[href]"))
+          e.setAttribute(
+            "href",
+            e
+              .getAttribute("href")
+              .replaceAll("/" + source, "/" + author)
+              .replaceAll(status, id),
+          );
+        for (const e of a.querySelectorAll("[data-testid]"))
+          e.dataset.testid = e.dataset.testid.replace(
+            "Container-" + source,
+            "Container-" + author,
+          );
+        for (const e of header.querySelectorAll("span"))
+          if (e.textContent === "@" + source) e.textContent = "@" + author;
+        for (const e of a.querySelectorAll("time"))
+          e.dateTime = new Date(
+            Date.now() - Number(e.dateTime.slice(4)) * 1000,
+          ).toISOString();
+        header.querySelector("time").dateTime = new Date(
+          Date.now() - age * 86400000,
+        ).toISOString();
+        const walker = document.createTreeWalker(
+          a.querySelector('[data-testid="tweetText"]'),
+          NodeFilter.SHOW_TEXT,
+        );
+        let first = true;
+        while (walker.nextNode()) {
+          walker.currentNode.textContent = first ? text : "";
+          first = false;
+        }
+        return node;
+      }
+      const templates = new Map();
+      for (const item of capture.articles) {
+        const a = parse(item.html).querySelector("article");
+        const author = a
+          .querySelector('[data-testid="User-Name"] a')
+          .getAttribute("href");
+        const kind =
+          item.tab === "reposts"
+            ? "repost"
+            : author !== "/OwnUser"
+              ? "other"
+              : a.querySelector('div[role="link"][tabindex="0"]')
+                ? "quote"
+                : a.textContent.includes("Replying to")
+                  ? "reply"
+                  : "post";
+        templates.set(item.tab + ":" + kind, item.html);
+      }
+
+      function shell() {
+        // The short shell applies below 700 px; X hides the Profile link at 657 px and shows it at 1000 px.
+        const source =
+          innerHeight < 700 ? capture.shell_default : capture.shell_1280;
+        document.querySelector("#shell").innerHTML = source.banner.replaceAll(
+          "OwnUser",
+          p.has("wrongaccount") ? "other" : "me",
+        );
+        const switcher = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+        const links = document.querySelectorAll('[data-testid="AppTabBar_Profile_Link"]');
+        if (p.has("accountreturn")) sessionStorage.accountReturn = "1";
+        if (sessionStorage.accountReturn) {
+          if (!window.accountLoad) {
+            window.accountLoad = Number(sessionStorage.accountLoads || 0) + 1;
+            sessionStorage.accountLoads = window.accountLoad;
+          }
+          if (window.accountLoad >= 3) {
+            for (const avatar of switcher.querySelectorAll('[data-testid^="UserAvatar-Container-"]'))
+              avatar.dataset.testid = "UserAvatar-Container-other";
+            for (const link of links) link.setAttribute("href", "/other");
+          }
+        }
+        if (p.has("switcherhandle"))
+          for (const avatar of switcher.querySelectorAll('[data-testid^="UserAvatar-Container-"]'))
+            avatar.dataset.testid = "UserAvatar-Container-" + p.get("switcherhandle");
+        if (p.has("profilehref"))
+          for (const link of links) link.setAttribute("href", p.get("profilehref"));
+        if (p.has("noswitcher")) switcher.remove();
+        if (p.has("noprofile")) for (const link of links) link.remove();
+        if (p.has("lateaccount") && !window.accountReady) {
+          document.querySelector("#shell").replaceChildren();
+          if (!window.accountTimer) window.accountTimer = setTimeout(() => {
+            window.accountReady = true;
+            shell();
+          }, 300);
+        }
+        const account = sessionStorage.accountKind;
+        if (account === "none") {
+          switcher.remove();
+          for (const link of links) link.remove();
+        } else if (account === "other" || account === "two") {
+          for (const avatar of switcher.querySelectorAll('[data-testid^="UserAvatar-Container-"]'))
+            avatar.dataset.testid = "UserAvatar-Container-other";
+          for (const link of links) link.setAttribute("href", account === "other" ? "/other" : "/me");
+        }
+      }
+      window.switchAccount = (kind) => {
+        sessionStorage.accountKind = kind;
+        shell();
+      };
+      function recordRemoval(id) {
+        window.removed.push(id);
+        if (p.has("switchafter") && window.removed.length === Number(p.get("switchafter")))
+          window.switchAccount(p.get("switchkind") || "other");
+        sessionStorage.removed = JSON.stringify(window.removed);
+      }
+      shell();
+      addEventListener("resize", shell);
+      const profile = parse(
+        capture.reposts_shell.primary_top.replaceAll("OwnUser", "me"),
+      );
+      const tabs = profile.querySelector('[role="tablist"]');
+      for (const a of tabs.querySelectorAll("a"))
+        a.setAttribute(
+          "aria-selected",
+          String(
+            a.getAttribute("href") ===
+              "/me" + (tab === "posts" ? "" : "/" + tab),
+          ),
+        );
+      const timeline = profile.querySelector('[aria-label="Timeline: text"]');
+      timeline.replaceChildren(document.querySelector("main"));
+      document.querySelector("#profile").append(profile);
+      function menu(html) {
+        const layers = document.querySelector("#layers");
+        // New layers preserve stale layers to model the worst case.
+        const layer = parse(html).firstElementChild;
+        layers.append(layer);
+        for (const item of layer.querySelectorAll('[role="menuitem"]'))
+          item.onclick = () => layer.remove();
+        return layer;
+      }
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && e.isTrusted)
+          document.querySelector("#layers").lastElementChild?.remove();
+      });
+      const rendered = new WeakMap();
+      function render(row, index) {
+        const [id, author, age, context, text] = row;
+        const kind = row[5];
+        const html = templates.get(tab + ":" + kind);
+        const cell = document.createElement("div");
+        rendered.set(cell, {row, index});
+        cell.dataset.testid = "cellInnerDiv";
+        cell.append(substitute(html, id, author, age, text));
+        const a = cell.querySelector("article");
+        if (context === "Pinned") {
+          // The pin label is not captured.
+          const pin = document.createElement("span");
+          pin.dataset.testid = "socialContext";
+          pin.textContent = "Pinned";
+          a.prepend(pin);
+        }
+        a.querySelector('[data-testid="caret"]').onclick = () => {
+          window.attempts[id] = (window.attempts[id] || 0) + 1;
+          sessionStorage.attempts = JSON.stringify(window.attempts);
+          if (id === "1" && window.attempts[id] <= Number(p.get("fail") || 0))
+            return;
+          const layers = menu(
+            capture.caret_menu.html
+              .replaceAll("OwnUser", "me")
+              .replaceAll(
+                capture.caret_menu.target.split("/").pop(),
+                p.has("othermenu") && id === "1" ? "6" : id,
+              ),
+          );
+          [...layers.querySelectorAll('[role="menuitem"]')].find(
+            (e) => e.textContent === "Delete",
+          ).onclick = () => {
+            layers.remove();
+            // The confirmation sheet and cancel button are not captured.
+            const sheet = menu(
+              '<div role="dialog" aria-modal="true"><button data-testid="confirmationSheetConfirm">Delete</button><button>Cancel</button></div>',
+            );
+            const confirm = sheet.querySelector(
+              '[data-testid="confirmationSheetConfirm"]',
+            );
+            sheet.querySelector("button:last-child").onclick = () => sheet.remove();
+            confirm.onclick = () => {
+              if (!p.has("stuck")) {
+                recordRemoval(id);
+                deleted.push(id);
+                sessionStorage.deleted = JSON.stringify(deleted);
+                cell.remove();
+                setTimeout(add, 50);
+              }
+              sheet.remove();
+            };
+            if (p.has("latepin") && id === "1") {
+              confirm.disabled = true;
+              setTimeout(() => {
+                const pin = document.createElement("span");
+                pin.dataset.testid = "socialContext";
+                pin.textContent = "Pinned";
+                a.prepend(pin);
+                confirm.disabled = false;
+              }, 50);
+            }
+          };
+        };
+        const undo = a.querySelector('[data-testid="unretweet"]');
+        if (undo)
+          undo.onclick = () => {
+            const layers = menu(capture.undo_menu.html.join(""));
+            layers.querySelector('[data-testid="unretweetConfirm"]').onclick =
+              () => {
+                if (undoDrop === "timeline") {
+                  main.replaceChildren();
+                } else if (undoDrop === "stale") {
+                  // A copy that still shows the undo control stays mounted next to the flipped cell.
+                  cell.after(cell.cloneNode(true));
+                  undo.dataset.testid = "retweet";
+                } else if (["retry", "alert", "errordetail"].includes(undoDrop)) {
+                  cell.remove();
+                  const signal = document.createElement(undoDrop === "retry" ? "button" : "div");
+                  if (undoDrop === "retry") signal.textContent = "Retry";
+                  else if (undoDrop === "alert") signal.setAttribute("role", "alert");
+                  else signal.dataset.testid = "error-detail";
+                  document.body.append(signal);
+                } else {
+                  recordRemoval(id);
+                  if (undoDrop === "cell") cell.remove();
+                  else undo.dataset.testid = "retweet";
+                }
+                layers.remove();
+              };
+          };
+        if (undo && window.removed.includes(id)) undo.dataset.testid = "retweet";
+        if (virtual)
+          cell.style = `position:absolute;top:${index * 450}px;height:450px`;
+        return cell;
+      }
+      function kind(row) {
+        if (row[3].includes("reposted")) return "repost";
+        if (row[1] !== "me") return "other";
+        if (row[4] === "quote") return "quote";
+        if (row[4] === "reply") return "reply";
+        return "post";
+      }
+      if (["cell", "retry", "alert", "errordetail"].includes(undoDrop))
+        rows.push(["9", "other", 1, "You reposted", "new repost"]);
+      for (const row of rows) row.push(kind(row));
+      let selected = rows.filter((r) =>
+        tab === "reposts" ? r[5] === "repost" :
+        tab === "media" ? false :
+        tab === "with_replies" ? ["reply", "other"].includes(r[5]) :
+        ["post", "quote"].includes(r[5]),
+      );
+      if (tab === "reposts") selected.reverse();
+      if (p.has("endless") && (p.get("endlesstab") || tab) === tab) {
+        const sample = selected[0];
+        const first = tab === "reposts" ? 40000 : tab === "with_replies" ? 20000 : 100;
+        if (sample) selected = Array.from({length: Number(p.get("count")) || 10000}, (_, i) => [String(first+i), ...sample.slice(1)]);
+      }
+      if (virtual)
+        selected = tab !== "posts" ? [] : Array.from({ length: 40 }, (_, i) => [
+          String(100 + i),
+          "me",
+          90,
+          "",
+          "old " + i,
+          "post",
+        ]);
+      if (p.get("emptytab") === tab) selected = [];
+      selected = selected.filter(row => !deleted.includes(row[0]));
+      const main = document.querySelector("main");
+      window.rerender = (id, copies = 1) => {
+        for (const cell of main.children) {
+          const entry = rendered.get(cell);
+          if (entry?.row[0] !== id) continue;
+          const {row, index} = entry;
+          cell.replaceWith(...Array.from({length: copies}, () => render(row, index)));
+          return;
+        }
+      };
+      if (!selected.length && p.get("emptytab") === tab) {
+        // A loaded profile tab without posts shows suggestions instead of an empty state.
+        main.innerHTML = '<div data-testid="primaryColumn"><section role="region"><div data-testid="cellInnerDiv"></div><div data-testid="cellInnerDiv"><div data-testid="UserCell">Who to follow</div></div></section></div>';
+      } else if (!selected.length && !p.has("noempty")) {
+        // The empty state inner markup is not captured.
+        main.innerHTML = '<div data-testid="emptyState">text</div>';
+      }
+      function add() {
+        if (virtual) return;
+        for (let n = 0; n < 2 && next < selected.length; n++) {
+          const row = selected[next++];
+          if (!deleted.includes(row[0])) main.append(render(row, next - 1));
+        }
+      }
+      function virtualRender() {
+        if (!selected.length) return;
+        main.replaceChildren();
+        const start = Math.max(0, Math.floor((scrollY - (main.getBoundingClientRect().top + scrollY)) / 450) - 1);
+        for (let i = start; i < Math.min(selected.length, start + 10); i++)
+          if (!window.removed.includes(selected[i][0]))
+            main.append(render(selected[i], i));
+      }
+      if (virtual) {
+        main.style = "height:18000px;position:relative";
+        virtualRender();
+        addEventListener("scroll", virtualRender);
+      } else if (p.has("slow")) setTimeout(add, 3000);
+      else add();
+      addEventListener("scroll", () => {
+        if (virtual) return;
+        if (!p.has("batch")) return add();
+        if (window.loading) return;
+        window.loading = true;
+        const spinner = document.createElement("div");
+        spinner.setAttribute("role", "progressbar");
+        document.body.append(spinner);
+        setTimeout(() => {
+          add();
+          spinner.remove();
+          window.loading = false;
+        }, 3000);
+      });
+      window.loadMore = add;
+      if (p.has("spanish")) document.documentElement.lang = "es";
+      if (p.has("login")) location.href = "/i/flow/login";
+    </script>
+  </body>
+</html>

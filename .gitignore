@@ -1,0 +1,7 @@
+browser-profile/
+logs/
+state.json
+__pycache__/
+.pytest_cache/
+.venv/
+state.json.tmp
