@@ -33,6 +33,9 @@ The script stops and removes nothing more when:
 While a run is active, the browser has a debug port open on `127.0.0.1`, so programs on this PC can control that browser window.
 The script closes the browser when the run ends.
 If you open a tab in that window during a run, the script leaves the window open, and the port stays open until you close the window.
+When the window stays open, the script shows a Windows notification that tells you to close the browser.
+It also writes that message into its own tab, but only when that tab is not in use.
+If the tab may be in use, you get the Windows notification only.
 
 ## Requirements
 
